@@ -50,12 +50,14 @@ def write_temp_cookie(temp_dir):
         f.write(cookie_bytes)
     return cookie_path
 
-def build_base_args(cookie_path=None):
-    args = ["--no-warnings", "--no-playlist"]
+def build_base_args(cookie_path=None, player_clients=None):
+    args = ["--no-playlist", "--force-ipv4"]
     if NODE_PATH:
         args += ["--js-runtimes", f"node:{NODE_PATH}"]
     if cookie_path:
         args += ["--cookies", cookie_path]
+    if player_clients:
+        args += ["--extractor-args", f"youtube:player_client={player_clients}"]
     return args
 
 def clean_display_name(title):
@@ -69,12 +71,39 @@ def to_ascii_filename(title):
 
 def format_error_message(stderr_text):
     lines = [line.strip() for line in (stderr_text or "").splitlines() if line.strip()]
-    error_lines = [line for line in lines if "ERROR:" in line]
-    if error_lines:
-        return error_lines[-1][:350]
+    relevant = [line for line in lines if "WARNING:" in line or "ERROR:" in line]
+    if relevant:
+        return " | ".join(relevant[-4:])[:600]
     if lines:
-        return lines[-1][:350]
+        return " | ".join(lines[-4:])[:600]
     return "İndirme sırasında bilinmeyen bir hata oluştu."
+
+def run_ytdlp_download(url, source_template, cookie_path):
+    if cookie_path:
+        attempts = [
+            (cookie_path, None),
+            (cookie_path, "mweb,tv,web_safari"),
+        ]
+    else:
+        attempts = [
+            (None, None),
+            (None, "android_vr,tv"),
+        ]
+
+    errors = []
+    for use_cookie, clients in attempts:
+        yt_cmd = [
+            YTDLP_PATH,
+            "-f", "bestaudio/best",
+            "--write-info-json",
+            "--concurrent-fragments", "4",
+            "-o", source_template,
+        ] + build_base_args(use_cookie, clients) + [url]
+        result = subprocess.run(yt_cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode == 0:
+            return result, ""
+        errors.append(format_error_message(result.stderr))
+    return None, " || ".join(errors)[:800]
 
 @app.route("/")
 def index():
@@ -129,18 +158,11 @@ def download():
     try:
         cookie_path = write_temp_cookie(temp_dir)
         source_template = os.path.join(temp_dir, "source.%(ext)s")
-        yt_cmd = [
-            YTDLP_PATH,
-            "-f", "bestaudio/best",
-            "--write-info-json",
-            "--concurrent-fragments", "4",
-            "-o", source_template,
-        ] + build_base_args(cookie_path) + [url]
+        yt_result, error_detail = run_ytdlp_download(url, source_template, cookie_path)
 
-        yt_result = subprocess.run(yt_cmd, capture_output=True, text=True, timeout=180)
-        if yt_result.returncode != 0:
+        if yt_result is None:
             shutil.rmtree(temp_dir, ignore_errors=True)
-            return format_error_message(yt_result.stderr), 400
+            return error_detail, 400
 
         source_path = None
         info_path = None
