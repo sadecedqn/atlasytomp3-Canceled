@@ -1,16 +1,11 @@
-/* ===========================
-   atlasytomp3 — main.js
-   =========================== */
-
-const form        = document.getElementById('downloadForm');
-const urlInput    = document.getElementById('urlInput');
+const form = document.getElementById('downloadForm');
+const urlInput = document.getElementById('urlInput');
 const downloadBtn = document.getElementById('downloadBtn');
-const pasteBtn    = document.getElementById('pasteBtn');
-const statusMsg   = document.getElementById('statusMsg');
+const pasteBtn = document.getElementById('pasteBtn');
+const statusMsg = document.getElementById('statusMsg');
 const headerBadge = document.getElementById('headerBadge');
 const featQuality = document.getElementById('featQuality');
 
-/* ---------- Quality selector sync ---------- */
 function getSelectedQuality() {
     const checked = form.querySelector('input[name="quality"]:checked');
     return checked ? checked.value : '192';
@@ -24,53 +19,49 @@ function syncQualityUI(val) {
 form.querySelectorAll('input[name="quality"]').forEach(radio => {
     radio.addEventListener('change', () => syncQualityUI(getSelectedQuality()));
 });
-
-// init
 syncQualityUI(getSelectedQuality());
 
-/* ---------- Paste button ---------- */
 pasteBtn.addEventListener('click', async () => {
     try {
         const text = await navigator.clipboard.readText();
         if (text.trim()) {
             urlInput.value = text.trim();
             urlInput.focus();
-            flashPaste();
+            pasteBtn.style.color = 'var(--accent)';
+            setTimeout(() => (pasteBtn.style.color = ''), 600);
         }
     } catch {
         urlInput.focus();
     }
 });
 
-function flashPaste() {
-    pasteBtn.style.color = 'var(--accent)';
-    setTimeout(() => (pasteBtn.style.color = ''), 600);
-}
-
-/* ---------- Auto-paste on focus if clipboard has YouTube URL ---------- */
-urlInput.addEventListener('focus', async () => {
-    if (urlInput.value) return;
+function isValidUrl(str) {
     try {
-        const text = await navigator.clipboard.readText();
-        if (isYouTubeURL(text.trim())) {
-            urlInput.value = text.trim();
-        }
-    } catch { /* permission denied, skip */ }
-});
-
-function isYouTubeURL(str) {
-    return /^https?:\/\/(www\.)?(youtube\.com\/(watch|shorts)|youtu\.be\/)/.test(str);
+        const parsed = new URL(str);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+        return false;
+    }
 }
 
-/* ---------- Form submit — fetch + streaming download ---------- */
-form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+function extractFilename(contentDisposition, fallback) {
+    if (!contentDisposition) return fallback;
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+        return decodeURIComponent(utf8Match[1]);
+    }
+    const asciiMatch = contentDisposition.match(/filename="?([^";\n]+)"?/i);
+    if (asciiMatch && asciiMatch[1]) {
+        return asciiMatch[1];
+    }
+    return fallback;
+}
 
+async function handleDownload() {
     const url = urlInput.value.trim();
-    if (!url) return showStatus('Lütfen bir YouTube linki girin.', 'error');
-
-    if (!isYouTubeURL(url)) {
-        return showStatus('Geçerli bir YouTube linki giriniz.', 'error');
+    if (!url) return showStatus('Lütfen bir link girin.', 'error');
+    if (!isValidUrl(url) || url.indexOf('http', 8) !== -1) {
+        return showStatus('Geçersiz link. Linki iki kez yapıştırmadığınızdan emin olun.', 'error');
     }
 
     setLoading(true);
@@ -88,13 +79,11 @@ form.addEventListener('submit', async (e) => {
             throw new Error(text || `Hata: ${response.status}`);
         }
 
-        /* Trigger file download in browser */
         const blob = await response.blob();
-        const contentDisposition = response.headers.get('Content-Disposition') || '';
-        const filenameMatch = contentDisposition.match(/filename\*?=['"]?([^'";]+)['"]?/);
-        const filename = filenameMatch
-            ? decodeURIComponent(filenameMatch[1])
-            : 'ses.mp3';
+        const filename = extractFilename(
+            response.headers.get('Content-Disposition'),
+            'ses.mp3'
+        );
 
         const objectURL = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -103,19 +92,22 @@ form.addEventListener('submit', async (e) => {
         document.body.appendChild(a);
         a.click();
         a.remove();
-        URL.revokeObjectURL(objectURL);
+        setTimeout(() => URL.revokeObjectURL(objectURL), 5000);
 
         showStatus(`✓ İndirme tamamlandı! ${getSelectedQuality()} kbps MP3 kaydedildi.`, 'success');
         urlInput.value = '';
-
     } catch (err) {
         showStatus('⚠ ' + (err.message || 'Bir hata oluştu, tekrar deneyin.'), 'error');
     } finally {
         setLoading(false);
     }
+}
+
+form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    handleDownload();
 });
 
-/* ---------- Helpers ---------- */
 function setLoading(state) {
     downloadBtn.disabled = state;
     downloadBtn.classList.toggle('loading', state);
@@ -131,21 +123,32 @@ function hideStatus() {
     statusMsg.hidden = true;
 }
 
-/* ---------- Clear status on input change ---------- */
 urlInput.addEventListener('input', () => {
     if (!statusMsg.hidden) hideStatus();
 });
 
-/* ---------- Waveform — slow bars on idle, fast on loading ---------- */
-function setWaveformSpeed(fast) {
-    const bars = document.querySelectorAll('.waveform span');
-    bars.forEach(bar => {
+const observer = new MutationObserver(() => {
+    const fast = downloadBtn.disabled;
+    document.querySelectorAll('.waveform span').forEach(bar => {
         const dur = parseFloat(getComputedStyle(bar).getPropertyValue('--dur') || 1);
         bar.style.animationDuration = fast ? `${dur * 0.35}s` : '';
     });
-}
-
-const observer = new MutationObserver(() => {
-    setWaveformSpeed(downloadBtn.disabled);
 });
 observer.observe(downloadBtn, { attributes: true, attributeFilter: ['disabled'] });
+
+const params = new URLSearchParams(window.location.search);
+const incomingQuality = params.get('quality');
+if (incomingQuality) {
+    const radio = form.querySelector(`input[name="quality"][value="${incomingQuality}"]`);
+    if (radio) {
+        radio.checked = true;
+        syncQualityUI(incomingQuality);
+    }
+}
+const incomingUrl = params.get('url');
+if (incomingUrl) {
+    urlInput.value = incomingUrl;
+    if (params.get('auto') === '1') {
+        handleDownload();
+    }
+}
