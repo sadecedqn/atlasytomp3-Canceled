@@ -20,25 +20,29 @@ YTDLP_PATH = os.path.join(os.path.dirname(sys.executable), "yt-dlp")
 if not os.path.exists(YTDLP_PATH):
     YTDLP_PATH = shutil.which("yt-dlp") or "yt-dlp"
 NODE_PATH = shutil.which("node") or shutil.which("nodejs") or ""
+SECRET_COOKIE_PATH = "/etc/secrets/cookies.txt"
 
 TR_MAP = str.maketrans("çÇğĞıİöÖşŞüÜ", "cCgGiIoOsSuU")
 
 app = Flask(__name__)
 
-def get_cookie_bytes():
+def get_cookie_info():
+    if os.path.exists(SECRET_COOKIE_PATH) and os.path.getsize(SECRET_COOKIE_PATH) > 0:
+        with open(SECRET_COOKIE_PATH, "rb") as f:
+            return f.read(), "secret_file"
     b64_val = os.environ.get("YT_COOKIES_B64", "").strip()
     if b64_val:
         try:
-            return base64.b64decode(b64_val)
+            return base64.b64decode(b64_val), "b64"
         except Exception:
             pass
     raw_val = os.environ.get("YOUTUBE_COOKIES", "").strip()
     if raw_val:
-        return raw_val.encode("utf-8")
-    return None
+        return raw_val.replace("\\n", "\n").encode("utf-8"), "env"
+    return None, "none"
 
 def write_temp_cookie(temp_dir):
-    cookie_bytes = get_cookie_bytes()
+    cookie_bytes, _ = get_cookie_info()
     if not cookie_bytes:
         return None
     cookie_path = os.path.join(temp_dir, "cookies.txt")
@@ -52,8 +56,6 @@ def build_base_args(cookie_path=None):
         args += ["--js-runtimes", f"node:{NODE_PATH}"]
     if cookie_path:
         args += ["--cookies", cookie_path]
-    else:
-        args += ["--extractor-args", "youtube:player_client=android_vr,ios,tv,web"]
     return args
 
 def clean_display_name(title):
@@ -81,11 +83,13 @@ def index():
 @app.route("/version")
 def version():
     r = subprocess.run([YTDLP_PATH, "--version"], capture_output=True, text=True)
+    cookie_bytes, cookie_source = get_cookie_info()
     return jsonify({
         "yt_dlp": r.stdout.strip(),
         "node": NODE_PATH,
         "ffmpeg": FFMPEG_PATH,
-        "cookie": get_cookie_bytes() is not None,
+        "cookie": cookie_bytes is not None,
+        "cookie_source": cookie_source,
     })
 
 @app.route("/info", methods=["POST"])
