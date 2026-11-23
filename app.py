@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,13 @@ def get_cookie_info():
         return raw_val.replace("\\n", "\n").encode("utf-8"), "env"
     return None, "none"
 
+def get_proxies():
+    raw = os.environ.get("PROXY_URL", "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"[\n,]+", raw) if p.strip()]
+    return parts
+
 def write_temp_cookie(temp_dir):
     cookie_bytes, _ = get_cookie_info()
     if not cookie_bytes:
@@ -50,12 +58,14 @@ def write_temp_cookie(temp_dir):
         f.write(cookie_bytes)
     return cookie_path
 
-def build_base_args(cookie_path=None, player_clients=None):
+def build_base_args(cookie_path=None, proxy_url=None, player_clients=None):
     args = ["--no-playlist", "--force-ipv4"]
     if NODE_PATH:
         args += ["--js-runtimes", f"node:{NODE_PATH}"]
     if cookie_path:
         args += ["--cookies", cookie_path]
+    if proxy_url:
+        args += ["--proxy", proxy_url]
     if player_clients:
         args += ["--extractor-args", f"youtube:player_client={player_clients}"]
     return args
@@ -79,26 +89,26 @@ def format_error_message(stderr_text):
     return "İndirme sırasında bilinmeyen bir hata oluştu."
 
 def run_ytdlp_download(url, source_template, cookie_path):
-    if cookie_path:
-        attempts = [
-            (cookie_path, None),
-            (cookie_path, "mweb,tv,web_safari"),
-        ]
+    proxies = get_proxies()
+    attempts = []
+
+    if proxies:
+        for proxy_url in proxies[:3]:
+            attempts.append((cookie_path, proxy_url, None))
+            attempts.append((cookie_path, proxy_url, "mweb,tv,web_safari"))
     else:
-        attempts = [
-            (None, None),
-            (None, "android_vr,tv"),
-        ]
+        attempts.append((cookie_path, None, None))
+        attempts.append((cookie_path, None, "mweb,tv,web_safari"))
 
     errors = []
-    for use_cookie, clients in attempts:
+    for use_cookie, proxy_url, clients in attempts:
         yt_cmd = [
             YTDLP_PATH,
             "-f", "bestaudio/best",
             "--write-info-json",
             "--concurrent-fragments", "4",
             "-o", source_template,
-        ] + build_base_args(use_cookie, clients) + [url]
+        ] + build_base_args(use_cookie, proxy_url, clients) + [url]
         result = subprocess.run(yt_cmd, capture_output=True, text=True, timeout=180)
         if result.returncode == 0:
             return result, ""
@@ -113,12 +123,15 @@ def index():
 def version():
     r = subprocess.run([YTDLP_PATH, "--version"], capture_output=True, text=True)
     cookie_bytes, cookie_source = get_cookie_info()
+    proxies = get_proxies()
     return jsonify({
         "yt_dlp": r.stdout.strip(),
         "node": NODE_PATH,
         "ffmpeg": FFMPEG_PATH,
         "cookie": cookie_bytes is not None,
         "cookie_source": cookie_source,
+        "proxy": len(proxies) > 0,
+        "proxy_count": len(proxies),
     })
 
 @app.route("/info", methods=["POST"])
@@ -129,7 +142,9 @@ def info():
     temp_dir = tempfile.mkdtemp()
     try:
         cookie_path = write_temp_cookie(temp_dir)
-        cmd = [YTDLP_PATH] + build_base_args(cookie_path) + ["-J", url]
+        proxies = get_proxies()
+        proxy_url = proxies[0] if proxies else None
+        cmd = [YTDLP_PATH] + build_base_args(cookie_path, proxy_url) + ["-J", url]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         if r.returncode != 0:
             return jsonify({"error": format_error_message(r.stderr)}), 400
